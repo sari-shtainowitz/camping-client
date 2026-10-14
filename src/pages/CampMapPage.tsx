@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { ApiError, api } from '../api'
-import type { CampSite, PagedResult, ReservationResponse, Tent } from '../types'
-import { RESERVATION_STATUS_CANCELLED, TENT_TYPES_HE } from '../types'
+import type { CampSite, PagedResult, Tent } from '../types'
+import { TENT_TYPES_HE } from '../types'
 import { readStayRange, writeStayRange } from '../lib/stayDates'
+import { fetchOccupancyByTent, findBooking } from '../lib/occupancy'
+import type { TentBooking } from '../lib/occupancy'
 
 type Status = 'free' | 'reserved' | 'off'
 
@@ -24,21 +26,6 @@ function fmt(iso: string): string {
   if (!iso || iso.length < 10) return '—'
   const [y, m, d] = iso.split('-')
   return `${Number(d)}/${Number(m)}/${y}`
-}
-
-// Same overlap rule the server enforces in ReservationService.EnsureTentIsFreeAsync:
-// a non-cancelled reservation whose range overlaps [start, end) blocks the tent.
-// Reservations outside the selected range do not.
-function findConflict(
-  reservations: ReservationResponse[],
-  start: string,
-  end: string,
-): ReservationResponse | null {
-  return (
-    reservations.find(
-      (r) => r.status !== RESERVATION_STATUS_CANCELLED && start < r.endDate && r.startDate < end,
-    ) ?? null
-  )
 }
 
 // ---- deterministic top-down placement of a tent on the map -------------------
@@ -177,7 +164,7 @@ function TentGlyph() {
 export function CampMapPage() {
   const [dates, setDates] = useState(readStayRange)
   const [tents, setTents] = useState<Tent[] | null>(null)
-  const [resByTent, setResByTent] = useState<Record<number, ReservationResponse[]>>({})
+  const [bookingsByTent, setBookingsByTent] = useState<Record<number, TentBooking[]>>({})
   const [site, setSite] = useState<CampSite | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
@@ -190,14 +177,8 @@ export function CampMapPage() {
       setLoadError(null)
       try {
         const tentPage = await api<PagedResult<Tent>>('/tents?pageSize=100')
-        const reservationPage = await api<PagedResult<ReservationResponse>>('/reservations?pageSize=100')
         if (cancelled) return
         setTents(tentPage.items)
-        const byTent: Record<number, ReservationResponse[]> = {}
-        for (const r of reservationPage.items) {
-          ;(byTent[r.tentId] ??= []).push(r)
-        }
-        setResByTent(byTent)
         try {
           const sites = await api<PagedResult<CampSite>>('/camping-sites?pageSize=100')
           if (!cancelled) setSite(sites.items[0] ?? null)
@@ -221,15 +202,35 @@ export function CampMapPage() {
     writeStayRange(dates)
   }, [dates])
 
+  // Every tent's booked dates for the selected range, whoever booked them - so a
+  // tent another guest took shows as taken here too. Re-run when the dates change.
+  useEffect(() => {
+    if (!(dates.start && dates.end && dates.start < dates.end)) {
+      setBookingsByTent({})
+      return
+    }
+    let cancelled = false
+    fetchOccupancyByTent(dates.start, dates.end)
+      .then((byTent) => {
+        if (!cancelled) setBookingsByTent(byTent)
+      })
+      .catch(() => {
+        /* tents just show as free; the server still guards every booking */
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [dates.start, dates.end])
+
   const today = isoDate(new Date())
   const nights = nightsBetween(dates.start, dates.end)
   const datesValid = nights > 0
 
-  // Availability for the selected range only: a tent is unavailable when an
-  // active reservation overlaps [start, end). Reservations outside it don't count.
-  function conflictOf(tent: Tent): ReservationResponse | null {
+  // Availability for the selected range only: a tent is unavailable when any
+  // guest's booking overlaps [start, end). Bookings outside it don't count.
+  function conflictOf(tent: Tent): TentBooking | null {
     if (!datesValid) return null
-    return findConflict(resByTent[tent.id] ?? [], dates.start, dates.end)
+    return findBooking(bookingsByTent[tent.id] ?? [], dates.start, dates.end)
   }
 
   function statusOf(tent: Tent): Status {

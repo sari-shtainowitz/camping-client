@@ -2,8 +2,10 @@ import { useCallback, useEffect, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { ApiError, api } from '../api'
 import { useAuth } from '../auth'
-import type { PagedResult, ReservationResponse, Tent } from '../types'
-import { RESERVATION_STATUS_CANCELLED, TENT_TYPES, TENT_TYPES_HE } from '../types'
+import type { PagedResult, Tent } from '../types'
+import { TENT_TYPES, TENT_TYPES_HE } from '../types'
+import { fetchOccupancyByTent, findBooking } from '../lib/occupancy'
+import type { TentBooking } from '../lib/occupancy'
 import { readStayRange, writeStayRange } from '../lib/stayDates'
 import { CHECKOUT_MINUTES } from './CheckoutPage'
 import type { CheckoutState } from './CheckoutPage'
@@ -43,23 +45,9 @@ function fmt(iso: string): string {
   return `${Number(d)}/${Number(m)}/${y}`
 }
 
-// Same rule the server enforces in ReservationService.EnsureTentIsFreeAsync:
-// a non-cancelled reservation whose range overlaps [start, end) blocks the tent.
-function findConflict(
-  reservations: ReservationResponse[],
-  start: string,
-  end: string,
-): ReservationResponse | null {
-  return (
-    reservations.find(
-      (r) =>
-        r.status !== RESERVATION_STATUS_CANCELLED && start < r.endDate && r.startDate < end,
-    ) ?? null
-  )
-}
-
-// The tent list with real server-side pagination and real availability (computed
-// from GET /api/reservations). Choosing a tent does NOT book it: it opens the
+// The tent list with real server-side pagination and real availability for
+// EVERY guest's bookings (GET /api/tents/occupancy - dates only, no personal
+// data; each guest's own bookings stay private on "ההזמנות שלי"). Choosing a tent does NOT book it: it opens the
 // checkout page with a 15-minute payment window, and the reservation is sent to
 // the server only after the (mock) payment is approved there.
 export function TentsPage() {
@@ -76,7 +64,7 @@ export function TentsPage() {
   const focusTentId = focusParam && /^\d+$/.test(focusParam) ? Number(focusParam) : null
 
   const [data, setData] = useState<PagedResult<Tent> | null>(null)
-  const [reservationsByTent, setReservationsByTent] = useState<Record<number, ReservationResponse[]>>({})
+  const [bookingsByTent, setBookingsByTent] = useState<Record<number, TentBooking[]>>({})
   const [loadError, setLoadError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
 
@@ -134,17 +122,6 @@ export function TentsPage() {
         tents = await api<PagedResult<Tent>>(`/tents?${query}`)
       }
       setData(tents)
-
-      // Availability: one request for the reservations, grouped by tent here
-      // (not one request per tent).
-      const byTent: Record<number, ReservationResponse[]> = {}
-      try {
-        const r = await api<PagedResult<ReservationResponse>>('/reservations?pageSize=100')
-        for (const res of r.items) (byTent[res.tentId] ??= []).push(res)
-      } catch {
-        /* availability just shows as free; the server still guards every booking */
-      }
-      setReservationsByTent(byTent)
     } catch (e) {
       setLoadError(e instanceof ApiError ? e.detail : (e as Error).message)
     } finally {
@@ -155,6 +132,26 @@ export function TentsPage() {
   useEffect(() => {
     void load()
   }, [load])
+
+  // Availability: every tent's booked dates for the selected stay, whoever booked
+  // them - one request for all tents, re-run whenever the dates change.
+  useEffect(() => {
+    if (!(dates.start && dates.end && dates.start < dates.end)) {
+      setBookingsByTent({})
+      return
+    }
+    let cancelled = false
+    fetchOccupancyByTent(dates.start, dates.end)
+      .then((byTent) => {
+        if (!cancelled) setBookingsByTent(byTent)
+      })
+      .catch(() => {
+        /* availability just shows as free; the server still guards every booking */
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [dates.start, dates.end])
 
   // Open the booking panel for the tent chosen on the map.
   useEffect(() => {
@@ -199,7 +196,7 @@ export function TentsPage() {
 
   const availableCount = datesValid
     ? shownTents.filter(
-        (t) => t.isActive && !findConflict(reservationsByTent[t.id] ?? [], dates.start, dates.end),
+        (t) => t.isActive && !findBooking(bookingsByTent[t.id] ?? [], dates.start, dates.end),
       ).length
     : 0
 
@@ -367,7 +364,7 @@ export function TentsPage() {
             dates={dates}
             conflict={
               tent.isActive
-                ? findConflict(reservationsByTent[tent.id] ?? [], dates.start, dates.end)
+                ? findBooking(bookingsByTent[tent.id] ?? [], dates.start, dates.end)
                 : null
             }
             open={openTentId === tent.id}
@@ -475,7 +472,7 @@ type TentCardProps = {
   nights: number
   datesValid: boolean
   dates: { start: string; end: string }
-  conflict: ReservationResponse | null
+  conflict: TentBooking | null
   open: boolean
   onToggle: () => void
   onCheckout: () => void
