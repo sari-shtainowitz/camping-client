@@ -34,17 +34,24 @@ function fmt(iso: string): string {
 // has any reservation).
 type TentBookingState = {
   now: ReservationResponse | null
-  upcoming: ReservationResponse | null
+  /** Every future booking of the tent, earliest first. */
+  upcoming: ReservationResponse[]
 }
 
 function bookingState(reservations: ReservationResponse[], today: string): TentBookingState {
   const live = reservations.filter((r) => r.status !== RESERVATION_STATUS_CANCELLED)
   const now = live.find((r) => r.startDate <= today && today < r.endDate) ?? null
-  const upcoming =
-    live
-      .filter((r) => r.startDate > today)
-      .sort((a, b) => (a.startDate < b.startDate ? -1 : 1))[0] ?? null
+  const upcoming = live
+    .filter((r) => r.startDate > today)
+    .sort((a, b) => (a.startDate < b.startDate ? -1 : 1))
   return { now, upcoming }
+}
+
+// "28/10–31/10/2026": the year once, at the end, when both dates share it.
+function range(start: string, end: string): string {
+  const s = fmt(start)
+  const e = fmt(end)
+  return start.slice(0, 4) === end.slice(0, 4) ? `${s.slice(0, s.lastIndexOf('/'))}–${e}` : `${s}–${e}`
 }
 
 export function AdminTentsPage() {
@@ -208,7 +215,7 @@ export function AdminTentsPage() {
               )}
               {data?.items.map((tent) => {
                 const state = bookingState(reservationsByTent[tent.id] ?? [], today)
-                const booked = state.now ?? state.upcoming
+                const booked = state.now ?? state.upcoming[0] ?? null
                 const typeHe = TENT_TYPES_HE[tent.type] ?? TENT_TYPES_HE[0]
                 return (
                   <tr key={tent.id} className={tent.isActive ? undefined : 'admin-table__row--off'}>
@@ -222,19 +229,21 @@ export function AdminTentsPage() {
                       </span>
                     </td>
                     <td>
-                      {state.now ? (
-                        <span className="pill pill--now" title={`עד ${fmt(state.now.endDate)}`}>
-                          מאוכלס עכשיו
-                        </span>
-                      ) : state.upcoming ? (
-                        <span
-                          className="pill pill--pending"
-                          title={`${fmt(state.upcoming.startDate)}–${fmt(state.upcoming.endDate)}`}
-                        >
-                          הזמנה ב-{fmt(state.upcoming.startDate)}
-                        </span>
-                      ) : (
+                      {!state.now && state.upcoming.length === 0 ? (
                         <span className="muted">—</span>
+                      ) : (
+                        <div className="booking-pills">
+                          {state.now && (
+                            <span className="pill pill--now" title={`עד ${fmt(state.now.endDate)}`}>
+                              מאוכלס עכשיו · עד {fmt(state.now.endDate)}
+                            </span>
+                          )}
+                          {state.upcoming.map((r) => (
+                            <span key={r.id} className="pill pill--pending" dir="ltr">
+                              {range(r.startDate, r.endDate)}
+                            </span>
+                          ))}
+                        </div>
                       )}
                     </td>
                     <td>

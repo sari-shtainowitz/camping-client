@@ -2387,3 +2387,6 @@ input[type='date']::-webkit-calendar-picker-indicator { filter: invert(0.85); cu
 }
 .checkout__demo input { margin-top: 3px; accent-color: var(--ember-1); }
 .checkout__demo strong { color: var(--ember-1); }
+
+/* admin tents: every current / upcoming booking of a tent, one pill each */
+.booking-pills { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
