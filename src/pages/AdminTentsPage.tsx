@@ -26,19 +26,25 @@ function fmt(iso: string): string {
   return `${Number(d)}/${Number(m)}/${y}`
 }
 
-// A tent is "booked" if it has any non-cancelled reservation that has not ended
-// yet. The backend blocks deleting a tent that has ANY reservation row
-// (FK is Restrict); disabling here on the booked case keeps the UI honest and
-// the API stays the real guard.
-function activeReservation(
-  reservations: ReservationResponse[],
-  today: string,
-): ReservationResponse | null {
-  return (
-    reservations.find(
-      (r) => r.status !== RESERVATION_STATUS_CANCELLED && r.endDate >= today,
-    ) ?? null
-  )
+// A tent's booking state for the admin table, same rules as the schedule page:
+//   now      - a guest is staying in it today (check-in <= today < check-out)
+//   upcoming - the earliest future booking, when nobody is in it today
+// Either one means the tent still has a live reservation, so deleting it is
+// disabled here (the API is the real guard: it refuses to delete a tent that
+// has any reservation).
+type TentBookingState = {
+  now: ReservationResponse | null
+  upcoming: ReservationResponse | null
+}
+
+function bookingState(reservations: ReservationResponse[], today: string): TentBookingState {
+  const live = reservations.filter((r) => r.status !== RESERVATION_STATUS_CANCELLED)
+  const now = live.find((r) => r.startDate <= today && today < r.endDate) ?? null
+  const upcoming =
+    live
+      .filter((r) => r.startDate > today)
+      .sort((a, b) => (a.startDate < b.startDate ? -1 : 1))[0] ?? null
+  return { now, upcoming }
 }
 
 export function AdminTentsPage() {
@@ -190,7 +196,7 @@ export function AdminTentsPage() {
                 <th>תפוסה</th>
                 <th>מחיר / לילה</th>
                 <th>סטטוס</th>
-                <th>הזמנה פעילה</th>
+                <th>הזמנות</th>
                 <th>פעולות</th>
               </tr>
             </thead>
@@ -201,7 +207,8 @@ export function AdminTentsPage() {
                 </tr>
               )}
               {data?.items.map((tent) => {
-                const booked = activeReservation(reservationsByTent[tent.id] ?? [], today)
+                const state = bookingState(reservationsByTent[tent.id] ?? [], today)
+                const booked = state.now ?? state.upcoming
                 const typeHe = TENT_TYPES_HE[tent.type] ?? TENT_TYPES_HE[0]
                 return (
                   <tr key={tent.id} className={tent.isActive ? undefined : 'admin-table__row--off'}>
@@ -215,9 +222,16 @@ export function AdminTentsPage() {
                       </span>
                     </td>
                     <td>
-                      {booked ? (
-                        <span className="pill pill--now" title={`עד ${fmt(booked.endDate)}`}>
-                          מאוכלס
+                      {state.now ? (
+                        <span className="pill pill--now" title={`עד ${fmt(state.now.endDate)}`}>
+                          מאוכלס עכשיו
+                        </span>
+                      ) : state.upcoming ? (
+                        <span
+                          className="pill pill--pending"
+                          title={`${fmt(state.upcoming.startDate)}–${fmt(state.upcoming.endDate)}`}
+                        >
+                          הזמנה ב-{fmt(state.upcoming.startDate)}
                         </span>
                       ) : (
                         <span className="muted">—</span>
