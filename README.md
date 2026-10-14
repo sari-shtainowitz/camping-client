@@ -1,8 +1,13 @@
 # Camping — React client (Step 15)
 
 A small React + TypeScript (Vite) client whose only job is to prove the Camping
-API works end to end. It is **not** part of `Camping.sln` and lives in its own
-folder so client and server can be versioned / deployed separately.
+API works end to end.
+
+**The server lives in its own repository:**
+[sari-shtainowitz/dotnet-project](https://github.com/sari-shtainowitz/dotnet-project)
+- start it first (see its README), then run this client with `npm install` and
+`npm run dev` (http://localhost:5173). Vite proxies `/api/*` to the API at
+`https://localhost:7195`; set `VITE_API_PROXY_TARGET` if it runs elsewhere.
 
 ## What it does
 
